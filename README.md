@@ -1,19 +1,21 @@
-# SteadySurvivor v5 — reactive damage response
+# SteadySurvivor v6 — Builders Mech Royale
 
-A single-strategy experiment from **v1 (score 2.27)**. Does NOT inherit v2–v4 changes.
+Python / Docker bot for `mechfight/1`, using only the standard library.
 
-## What changed
+This is an isolated **movement timing experiment based on v1**, the highest-scoring version so far (2.27 in 48 practice matches). v2-v5 had lower practice scores.
 
-When a `damaged` event supplies a real-world bearing, v5 remembers it for 2 seconds, sidesteps away while moving away from the source, boosts if energy permits, and faces the threat when no visible target is available. It postpones loot pursuit during this brief evasive period. High-priority evacuation from the shrinking zone is retained.
+The bot now uses `zone.shrink_end`, estimated walking speed and distance to the next zone to delay moving to the next circle while there is ample time. It retains emergency movement when the current circle edge is too close or the robot is already outside. Weapon logic and threat avoidance match v1.
 
-This may help against attacks from outside the field of view, but it **has not been proven to improve the 48-game match score**. The original v1 should remain available for rollback.
+## Test
 
-## Tests
+```sh
+python3 test_strategy.py
+bash test_official.sh /path/to/mechfight-kit
+bash test_docker.sh /path/to/mechfight-kit
+```
 
-`python3 test_strategy.py` — synthetic behavioral assertions, not simulated matches.
+`check.py` validates the protocol only, *not* game strength. The Docker test is meant to be run on your Mac.
 
-`bash test_official.sh ../mechfight-kit` — official protocol check. Run from this directory.
+## Submit
 
-`bash test_docker.sh ../mechfight-kit` — local Docker platform check (requires Docker Desktop).
-
-Buildathon submission uses this repository's root-level `Dockerfile` and `example_bot.py`.
+Commit `example_bot.py`, `Dockerfile`, the license and supporting files to the repo root, push to GitHub, then submit the public GitHub URL.

@@ -1,7 +1,7 @@
-# Changelog
+# Change log
 
-## v5
-- Branch from v1 (score 2.27), not v4.
-- React to `events[].damaged` world bearing for two seconds.
-- Sidestep, boost, face shooter, briefly skip loot pursuit during a damage burst.
-- Add synthetic tests for threat response and expiration.
+## v6 — Timed zone entry (experiment)
+
+Built from the original **v1 (score 2.27)**, **not v5**. One gameplay change: only start moving into the *next* circle when remaining travel time is close to the deadline. Current-zone emergencies still override this. All targeting, weapons, pickup scoring, and enemy avoidance are identical to v1.
+
+**Hypothesis:** stop rushing into the middle of the enemy team too early. This is unproven until scored matches.
