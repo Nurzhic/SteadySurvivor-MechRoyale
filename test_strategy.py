@@ -1,39 +1,50 @@
 #!/usr/bin/env python3
-"""Deterministic action checks; this is NOT a match simulator."""
+"""Checks for v5's single new damage-response behavior; not a game simulation."""
+import copy
+import math
 from example_bot import SurvivalBot
 
-def obs(special='laser', charge=0.2, ammo=10, aim=(0.0, -0.0997), d=25):
-    w0={"kind":"gun","ammo":ammo,"reload":0,"cooldown":0.0,
-        "stats":{"range":230,"speed":252}}
-    w1={"kind":special,"cooldown":0.0,"charge":charge,
-        "stats":{"range":280 if special=="laser" else 45 if special=="lightning" else 235,
-                 "charge":0.75,"speed":72,"gravity":22}}
+
+def observation(tick=20, events=None):
     return {
-      "type":"obs","tick":20,"t":1.0,"alive":16,
-      "self":{"id":0,"pos":[0,0,0],"vel":[0,0,0],"aim":list(aim),
-              "hp":1400,"max_hp":1400,"energy":100,"max_energy":100,
-              "grounded":True,"weapons":[w0,w1],"stats":{"muzzle_height":7}},
-      "mechs":[{"kind":"mech","id":1,"pos":[d,0,0],"vel":[0,0,0],
-                "hp":1000,"max_hp":1400}],
-      "pickups":[],"cubes":[],"crates":[],"drops":[],"projectiles":[],
-      "zone":{"center":[0,0],"radius":560,"next_center":[0,0],"next_radius":380}}
-def act(o):
+        'type':'obs','tick':tick,'t':tick/20.0, 'alive':16,
+        'self':{'id':0,'pos':[0.0,0.0,0.0],'vel':[0.0,0.0,0.0],
+                'aim':[0.0,0.0],'hp':900,'max_hp':1400,
+                'grounded':True,'energy':90,'max_energy':100,
+                'weapons':[{'kind':'gun','ammo':12,'reload':0,'cooldown':0,
+                            'stats':{'range':230, 'speed':252}},None],
+                'stats':{'muzzle_height':7}},
+        'mechs':[],'cubes':[],'pickups':[],'crates':[],'drops':[],
+        'projectiles':[], 'events':events or [],
+        'zone':{'center':[0,0],'radius':560,
+                'next_center':[0,0],'next_radius':380}
+    }
+
+def run():
     bot=SurvivalBot()
-    bot.ready({"type":"hello","config":{},"seed":1})
-    return bot.act(o)
-def main():
-    a=act(obs(special="laser",charge=0.2))
-    assert a["fire"]==[True,True], f"both gun and charging laser must fire: {a}"
-    a=act(obs(special="laser",charge=0.75))
-    assert a["fire"]==[True,False], f"gun must continue while laser releases: {a}"
-    a=act(obs(special="lightning"))
-    assert a["fire"]==[True,True], f"gun and lightning must fire together: {a}"
-    a=act(obs(special="mortar"))
-    assert a["fire"]==[False,True], f"do not waste gun at ballistic arc: {a}"
-    a=act(obs(special="laser",ammo=0))
-    assert a["fire"][0] is False, f"empty gun must not fire: {a}"
-    a=act(obs(special="laser",aim=(2.5,0)))
-    assert a["fire"][0] is False, f"gun should wait to align: {a}"
-    print("Strategy tests PASS: dual-fire laser, lightning, safe mortar separation, ammo and aim guards")
-if __name__ == "__main__":
-    main()
+    bot.ready({'type':'hello','config':{}})
+    quiet=bot.act(observation(tick=20))
+    assert not quiet['boost'], quiet
+    # East is the attacker's bearing. Move away and strafe, and face east.
+    a=bot.act(observation(tick=22,events=[{
+      'type':'damaged','amount':90,'weapon':'gun','bearing':0.0,'by':5,'rear':True}]))
+    assert a['boost'], a
+    assert a['move'][0] < -0.5, a
+    assert abs(a['move'][1]) > 0.2, a
+    assert abs(a['aim'][0]) < 0.01, a
+    # Keep reacting briefly even if damage does not happen every action.
+    b=bot.act(observation(tick=36))
+    assert b['boost'] and b['move'][0] < 0, b
+    # Expire after two seconds.
+    c=bot.act(observation(tick=64))
+    assert not c['boost'], c
+    # Zone damage and absent bearing must not trigger false threats.
+    bot=SurvivalBot()
+    bot.ready({'type':'hello','config':{}})
+    d=bot.act(observation(tick=22, events=[
+         {'type':'damaged','amount':30,'weapon':'zone','bearing':None}]))
+    assert not d['boost'], d
+    print('Strategy tests PASS: attack bearing, sidestep, boost, rear armor, threat TTL, zone guard')
+
+if __name__=='__main__':
+    run()

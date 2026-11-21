@@ -101,10 +101,13 @@ class SurvivalBot:
         self.escape_until = -1
         self.escape_side = 1
         self.config = {}
+        self.threat_yaw = None
+        self.threat_until = -1
+        self.threat_side = 1
 
     def ready(self, hello):
         self.config = hello.get('config', {}) or {}
-        return {'type': 'ready', 'name': 'SteadySurvivor-v4'}
+        return {'type': 'ready', 'name': 'SteadySurvivor-v5'}
 
     def act(self, obs):
         me = obs.get('self') or {}
@@ -131,6 +134,33 @@ class SurvivalBot:
         if outside:
             zx, zy = normalize(float(zone_xy[0]) - pos[0], float(zone_xy[1]) - pos[1])
         move_x, move_y = zx * zone_urgency, zy * zone_urgency
+
+        # Reactive cover escape. Events tell us where a hit originated even
+        # when the attacker is out of view; the original v1 ignored them.
+        # The damage bearing is WORLD yaw (not relative to our body).
+        for event in obs.get('events', []):
+            if event.get('type') != 'damaged' or event.get('weapon') == 'zone':
+                continue
+            bearing = event.get('bearing')
+            if bearing is None:
+                continue
+            try:
+                bearing = float(bearing)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(bearing):
+                continue
+            self.threat_yaw = bearing
+            self.threat_until = tick + 40  # remember for 2 seconds
+            # Stable side for an entire evasive burst to avoid wobbling.
+            self.threat_side = 1 if ((int(me.get('id', 0)) + tick // 80) % 2) == 0 else -1
+        under_fire = self.threat_yaw is not None and tick <= self.threat_until
+        if under_fire and zone_urgency < 3.0:
+            # Run both away and sideways: beats directly retreating in a line.
+            dx, dy = math.cos(self.threat_yaw), math.sin(self.threat_yaw)
+            strength = 1.55 if health_ratio > 0.6 else 2.0
+            move_x += strength * (-0.75 * dx - 0.65 * self.threat_side * dy)
+            move_y += strength * (-0.75 * dy + 0.65 * self.threat_side * dx)
 
         enemies = [m for m in obs.get('mechs', []) if m.get('kind') == 'mech' and m.get('pos')]
         npcs = [m for m in obs.get('mechs', []) if m.get('kind') == 'npc' and m.get('pos')]
@@ -182,7 +212,7 @@ class SurvivalBot:
                 if d < 130 and 135 - 0.65 * d + (40 if health_ratio < 0.75 else 0) > goal_priority:
                     goal, goal_priority, pickup = drop, 135 - 0.65 * d, None
 
-        if goal is not None and closest_d > 50 and zone_urgency < 2.5:
+        if goal is not None and closest_d > 50 and zone_urgency < 2.5 and not under_fire:
             gx, gy = xy(goal)
             gd = dist(pos, (gx, gy))
             if gd > 1.5:
@@ -192,7 +222,7 @@ class SurvivalBot:
                 move_y += uy * weight
         else:
             # When safe, drift toward the center of the next circle, not the edge.
-            if not enemies and zone_urgency == 0 and dist(pos, next_xy) > 70:
+            if not enemies and not under_fire and zone_urgency == 0 and dist(pos, next_xy) > 70:
                 ux, uy = normalize(float(next_xy[0]) - pos[0], float(next_xy[1]) - pos[1])
                 move_x += ux * 0.7
                 move_y += uy * 0.7
@@ -305,28 +335,11 @@ class SurvivalBot:
                     fire[chosen_slot] = angular_error < 0.22
                 else:
                     fire[chosen_slot] = angular_error < (0.2 if chosen_kind == 'mortar' else 0.15)
-                # Fire the arm gun in parallel with laser/lightning when both
-                # weapons' ballistic solutions fit the same torso aim.
-                # Different muzzle trajectories: never couple gun with mortar.
-                if chosen_kind in ('laser', 'lightning'):
-                    for gun_slot, gun in enumerate(weapons[:2]):
-                        if not gun or gun.get('kind') != 'gun':
-                            continue
-                        gun_stats = gun.get('stats') or {}
-                        gun_range = float(gun_stats.get('range', 230.0))
-                        gun_aim = aim_at(me, target, 'gun')
-                        yaw_sep = abs(delta_angle(gun_aim[0] - aim[0]))
-                        pitch_sep = abs(gun_aim[1] - aim[1])
-                        yaw_error = abs(delta_angle(gun_aim[0] - float(current_aim[0])))
-                        pitch_error = abs(gun_aim[1] - float(current_aim[1]))
-                        if (td < 0.95 * gun_range
-                                and int(gun.get('ammo', 0)) > 0
-                                and float(gun.get('reload', 0)) <= 0
-                                and yaw_sep < 0.12 and pitch_sep < 0.11
-                                and yaw_error < 0.15 and pitch_error < 0.13):
-                            fire[gun_slot] = True
             else:
                 aim = list(aim_at(me, target, 'gun'))
+        elif under_fire:
+            # Face the incoming fire: the world penalizes exposing rear armor.
+            aim = [self.threat_yaw, -0.04]
         elif not nearest and t > 0:
             # Scan for enemies instead of permanently looking in one direction.
             aim = [math.sin(t / 13.0) * math.pi, -0.04]
@@ -337,7 +350,7 @@ class SurvivalBot:
             'aim': [round(aim[0], 5), round(aim[1], 5)],
             'fire': fire,
             'boost': bool(me.get('grounded', True) and energy > max_energy * 0.5 and
-                          (outside or next_edge > 25 or closest_d < 58) and
+                          (outside or next_edge > 25 or closest_d < 58 or under_fire) and
                           math.hypot(mx,my) > 0.5),
             'jump': bool(stuck_mode and me.get('grounded', True) and energy > 22),
             'reload': bool(any(w and w.get('kind') == 'gun' and

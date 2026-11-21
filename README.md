@@ -1,34 +1,19 @@
-# SteadySurvivor v4 — dual-fire experiment
+# SteadySurvivor v5 — reactive damage response
 
-This candidate branches from the **v1 bot that scored 2.27**, not from v2 or v3.
+A single-strategy experiment from **v1 (score 2.27)**. Does NOT inherit v2–v4 changes.
 
-## One combat change
-When the bot selects a laser or lightning attack, it now ALSO fires the arm gun,
-provided its own ballistic aim agrees with the selected torso aim, the target is in
-gun range, the weapon is loaded and the torso is aligned. Laser charging/release is
-unchanged; mortar trajectories never trigger secondary gun fire.
+## What changed
 
-**Unchanged from v1:** movement, threat repulsion, looting decisions, upgrade
-ranking, target selection, gun aiming, laser charging, boosting, obstacle recovery.
+When a `damaged` event supplies a real-world bearing, v5 remembers it for 2 seconds, sidesteps away while moving away from the source, boosts if energy permits, and faces the threat when no visible target is available. It postpones loot pursuit during this brief evasive period. High-priority evacuation from the shrinking zone is retained.
 
-This is a controlled experiment. Passing check.py shows protocol conformance,
-NOT improved game performance. Scored matches are needed to compare with v1.
+This may help against attacks from outside the field of view, but it **has not been proven to improve the 48-game match score**. The original v1 should remain available for rollback.
 
-## Test
-Requires the official `mechfight-kit` extracted next to this folder.
+## Tests
 
-```sh
-python3 test_strategy.py
-python3 smoke_test.py
-bash test_official.sh
-bash test_docker.sh
-```
+`python3 test_strategy.py` — synthetic behavioral assertions, not simulated matches.
 
-## Submission
-Push the changed `example_bot.py` and `test_strategy.py` to the existing GitHub
-repository, then re-submit. Keep a tag/commit for the v1 2.27 baseline and
-compare results. The event ranks your best score, but the scorer rebuilds your
-selected commit for finals. You need to retain the ability to restore your best.
+`bash test_official.sh ../mechfight-kit` — official protocol check. Run from this directory.
 
-Mechfight/1 protocol, 50 ms per action, arm64 Mac Docker tested by participant.
-MIT license.
+`bash test_docker.sh ../mechfight-kit` — local Docker platform check (requires Docker Desktop).
+
+Buildathon submission uses this repository's root-level `Dockerfile` and `example_bot.py`.
