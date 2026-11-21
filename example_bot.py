@@ -79,212 +79,25 @@ def mortar_aim(me, target, speed, gravity=22.0):
 
 def upgrade_choice(offer):
     # Defensive upgrades help placement; weapon improvements are useful second.
+    # Exact upgrade IDs from hello.config.upgrades, not substring guesses.
+    # Constant squad pursuit makes mobility and immediate durability valuable.
     scores = {
-        'nanites': 108, 'armor': 100, 'plating': 96, 'servos': 93,
-        'jets': 90, 'reactor': 82, 'capacitor': 78, 'gun_rate': 70,
-        'gun_damage': 68, 'gun_mag': 65, 'laser_damage': 72,
-        'laser_charge': 72, 'gun_velocity': 64, 'gyros': 45,
-        'sensors': 40, 'mortar_reload': 65, 'mortar_velocity': 50,
-        'lightning_efficiency': 61, 'lightning_range': 48,
+        'servos': 115, 'jets': 110, 'plating': 106, 'armor': 103,
+        'capacitor': 99, 'reactor': 96, 'nanites': 88,
+        'gun_rate': 78, 'gun_damage': 76, 'gun_mag': 72,
+        'laser_charge': 71, 'laser_damage': 68,
+        'mortar_reload': 68, 'gun_velocity': 62,
+        'lightning_efficiency': 60, 'lightning_range': 56,
+        'gyros': 49, 'sensors': 44,
+        'mortar_velocity': 42, 'laser_pierce': 38,
+        'mortar_splash': 38, 'lightning_chain': 37,
     }
     choices = offer.get('choices', [])
     if not choices:
         return None
     def score(item):
-        words = (str(item.get('id', '')) + ' ' + str(item.get('name', '')) + ' ' + str(item.get('desc', ''))).lower()
-        return max((rank for word, rank in scores.items() if word in words), default=15)
+        return scores.get(str(item.get('id', '')).lower(), 15)
     return max(range(len(choices)), key=lambda i: score(choices[i]))
-
-
-# Place after imports and helpers, before SurvivalBot.
-import heapq
-
-
-class MapNavigator:
-    """Small deterministic grid navigator for ground-level campus buildings.
-
-    Bridges are deliberately not treated as solid footprint obstacles: most
-    bridges can be crossed under or on top. This remains an approximation.
-    """
-    def __init__(self, map_dir):
-        self.ok = False
-        self.cell = 7.0
-        self.path = []
-        self.target_cell = None
-        self.next_replan = 0
-        self.search = None
-        self.index = 0
-        if not map_dir:
-            return
-        try:
-            with open(os.path.join(map_dir, 'v2', 'world.json'), 'r') as f:
-                world = json.load(f)
-        except (OSError, ValueError):
-            return
-        bounds = world['bounds']
-        self.minx, self.miny = float(bounds['minX']), float(bounds['minY'])
-        self.nx = int((float(bounds['maxX']) - self.minx) / self.cell) + 1
-        self.ny = int((float(bounds['maxY']) - self.miny) / self.cell) + 1
-        self.blocked = bytearray(self.nx * self.ny)
-        for prism in world.get('prisms', []):
-            if prism.get('kind') not in ('building', 'stadium'):
-                continue
-            ring = prism.get('ring') or []
-            if len(ring) < 6:
-                continue
-            xs = ring[::2]
-            ys = ring[1::2]
-            x0 = max(0, int((min(xs) - 3.5 - self.minx) / self.cell))
-            x1 = min(self.nx - 1, int((max(xs) + 3.5 - self.minx) / self.cell) + 1)
-            y0 = max(0, int((min(ys) - 3.5 - self.miny) / self.cell))
-            y1 = min(self.ny - 1, int((max(ys) + 3.5 - self.miny) / self.cell) + 1)
-            holes = prism.get('holes') or []
-            for j in range(y0, y1 + 1):
-                y = self.miny + self.cell * j
-                for i in range(x0, x1 + 1):
-                    x = self.minx + self.cell * i
-                    # Inflation by ~3 m to allow clearance for the mech's radius.
-                    samples = ((x,y), (x+2.5,y), (x-2.5,y),
-                               (x,y+2.5), (x,y-2.5))
-                    if any(self.point_in_polygon(sx, sy, ring) and
-                           not any(self.point_in_polygon(sx,sy,h) for h in holes)
-                           for sx, sy in samples):
-                        self.blocked[j*self.nx + i] = 1
-        self.ok = True
-
-    @staticmethod
-    def point_in_polygon(x, y, ring):
-        inside = False
-        # Flat polygon xy pairs; crossing test.
-        k = len(ring) - 2
-        for n in range(0, len(ring), 2):
-            ax, ay = ring[k], ring[k+1]
-            bx, by = ring[n], ring[n+1]
-            if (ay > y) != (by > y):
-                intersect_x = (bx - ax) * (y - ay) / (by - ay) + ax
-                if x < intersect_x:
-                    inside = not inside
-            k = n
-        return inside
-
-    def to_cell(self, pt):
-        return (max(0, min(self.nx-1, round((pt[0]-self.minx)/self.cell))),
-                max(0, min(self.ny-1, round((pt[1]-self.miny)/self.cell))))
-
-    def to_world(self, cell):
-        return (self.minx + self.cell*cell[0], self.miny+self.cell*cell[1])
-
-    def free(self, i, j):
-        return 0 <= i < self.nx and 0 <= j < self.ny and not self.blocked[j*self.nx+i]
-
-    def nearest_free(self, ij):
-        x, y = ij
-        if self.free(x,y):
-            return ij
-        for r in range(1, 8):
-            points = [(x+dx, y+dy) for dx in range(-r, r+1)
-                      for dy in range(-r,r+1) if max(abs(dx),abs(dy)) == r]
-            candidates = [p for p in points if self.free(*p)]
-            if candidates:
-                return min(candidates, key=lambda p: (p[0]-x)**2+(p[1]-y)**2)
-        return ij
-
-    def clear_segment(self, a, b):
-        # A coarse LOS through the footprint grid. Stuck handler handles
-        # collision cases where the grid approximation is too permissive.
-        length = dist(a,b)
-        count = max(1, int(length / (self.cell*.46)))
-        for k in range(1, count+1):
-            f = k/count
-            x,y = a[0]*(1-f)+b[0]*f, a[1]*(1-f)+b[1]*f
-            ci,cj = self.to_cell((x,y))
-            if not self.free(ci,cj):
-                return False
-        return True
-
-    def build_path(self, start, goal):
-        start = self.nearest_free(start)
-        goal = self.nearest_free(goal)
-        if not self.free(*start) or not self.free(*goal):
-            return []
-        if start == goal:
-            return [goal]
-        dirs = ((1,0,1),(-1,0,1),(0,1,1),(0,-1,1),
-                (1,1,1.4142),(-1,1,1.4142),(1,-1,1.4142),(-1,-1,1.4142))
-        openq = [(0.0, 0.0, start)]
-        best = {start:0.0}
-        prev = {}
-        visits=0
-        while openq and visits < 6000:
-            _, cost, cur = heapq.heappop(openq)
-            if cost != best.get(cur):
-                continue
-            visits+=1
-            # Time-slice A* so that a long map search never blocks a 50 ms tick.
-            if visits % 380 == 0:
-                yield None
-            if cur == goal:
-                out = [cur]
-                while cur != start:
-                    cur = prev[cur]
-                    out.append(cur)
-                out.reverse()
-                return out
-            x,y=cur
-            for dx,dy,w in dirs:
-                nx,ny=x+dx,y+dy
-                if not self.free(nx,ny):
-                    continue
-                if dx and dy and (not self.free(x+dx,y) or not self.free(x,y+dy)):
-                    continue
-                nxt=(nx,ny)
-                nc=cost+w
-                if nc < best.get(nxt,1e30):
-                    best[nxt]=nc
-                    prev[nxt]=cur
-                    heuristic=math.hypot(nx-goal[0],ny-goal[1])
-                    heapq.heappush(openq,(nc+heuristic,nc,nxt))
-        return []
-
-    def travel(self, current, goal, tick, force=False):
-        if not self.ok or dist(current,goal)<8:
-            return goal
-        # For destinations in immediate line of sight, don't search.
-        if self.clear_segment(current, goal):
-            self.path=[]
-            self.search=None
-            self.target_cell=None
-            return goal
-        target_cell=self.to_cell(goal)
-        if (target_cell != self.target_cell or
-                (self.search is None and tick >= self.next_replan) or
-                (force and self.search is None and tick >= self.next_replan - 15)):
-            self.search=self.build_path(self.to_cell(current), target_cell)
-            self.target_cell=target_cell
-            self.path=[]
-            self.index=0
-            self.next_replan=tick+38
-        if self.search is not None:
-            try:
-                next(self.search)
-            except StopIteration as done:
-                self.path=done.value or []
-                self.search=None
-        if not self.path:
-            # While planning, move toward goal; a stalled unit can jet over an edge.
-            return goal
-        # Look ahead on the path, avoiding tiny cell-to-cell turns.
-        closest = min(range(len(self.path)),key=lambda i: dist(current,self.to_world(self.path[i])))
-        self.index=max(self.index,closest)
-        best=self.index
-        for i in range(self.index+1,min(len(self.path),self.index+12)):
-            p=self.to_world(self.path[i])
-            if self.clear_segment(current,p):
-                best=i
-            else:
-                break
-        self.index=best
-        return self.to_world(self.path[best])
 
 
 class SurvivalBot:
@@ -294,21 +107,14 @@ class SurvivalBot:
         self.escape_until = -1
         self.escape_side = 1
         self.config = {}
-        self.navigator = None
+        self.last_hit_tick = -10000
+        self.last_hit_bearing = 0.0
         self.scan_offset = 0.0
-        self.last_threat_tick = -10000
-        self.last_threat_yaw = 0.0
-        self.goal_id = None
-        self.goal_until = 0
-        self.retreat_goal = None
-        self.retreat_refresh = 0
-        self.retreat_enemy_id = None
 
     def ready(self, hello):
         self.config = hello.get('config', {}) or {}
-        self.scan_offset = (float(hello.get('seed', 1)) % 997) / 997.0 * TAU
-        self.navigator = MapNavigator((hello.get('map') or {}).get('dir'))
-        return {'type': 'ready', 'name': 'SteadySurvivor-v2'}
+        self.scan_offset = (int(hello.get('seed', 1)) % 1021) / 1021.0 * TAU
+        return {'type': 'ready', 'name': 'SteadySurvivor-v3'}
 
     def act(self, obs):
         me = obs.get('self') or {}
@@ -334,43 +140,37 @@ class SurvivalBot:
                     if next_edge > 0 else (0, 0))
         if outside:
             zx, zy = normalize(float(zone_xy[0]) - pos[0], float(zone_xy[1]) - pos[1])
-        move_x, move_y = 0.0, 0.0
-        strategic_goal = None
-        if outside:
-            strategic_goal = (float(zone_xy[0]), float(zone_xy[1]))
-        elif next_edge > 0:
-            strategic_goal = (float(next_xy[0]), float(next_xy[1]))
-        else:
-            # Stay well inside the *next* zone, but avoid camping in its busy center.
-            safe_offset = min(55.0, max(5.0, nrad * 0.26))
-            u0, v0 = normalize(pos[0]-float(next_xy[0]), pos[1]-float(next_xy[1]))
-            strategic_goal = (float(next_xy[0])+u0*safe_offset,
-                              float(next_xy[1])+v0*safe_offset)
-
+        move_x, move_y = zx * zone_urgency, zy * zone_urgency
 
         enemies = [m for m in obs.get('mechs', []) if m.get('kind') == 'mech' and m.get('pos')]
         npcs = [m for m in obs.get('mechs', []) if m.get('kind') == 'npc' and m.get('pos')]
         enemies.sort(key=lambda m: dist(pos, xy(m)))
         nearest = enemies[0] if enemies else None
         closest_d = dist(pos, xy(nearest)) if nearest else 1e9
-        for evt in obs.get('events', []):
-            if evt.get('type') == 'damaged' and evt.get('bearing') is not None:
-                self.last_threat_yaw = float(evt['bearing'])
-                self.last_threat_tick = tick
-
+        # Events give a world-frame direction to attacks from hidden pursuers.
+        for event in obs.get('events', []):
+            if event.get('type') == 'damaged' and event.get('bearing') is not None:
+                self.last_hit_tick = tick
+                self.last_hit_bearing = float(event['bearing'])
+        recently_hit = tick - self.last_hit_tick <= 35
 
         # Strongly prefer space from opponents: practice bots cooperate and hunt us.
         for enemy in enemies:
             ex, ey = xy(enemy)
             d = dist(pos, (ex, ey))
-            if d < 150 and d > 1e-3:
-                strength = (150 - d) / 75.0
+            if d < 170 and d > 1e-3:
+                strength = (170 - d) / 76.0
                 if d < 55:
                     strength *= 1.9
                 if health_ratio < 0.6:
                     strength *= 1.4
                 move_x += (pos[0] - ex) / d * strength
                 move_y += (pos[1] - ey) / d * strength
+
+        # Don't stand still after being shot by an unseen opponent.
+        if recently_hit and nearest is None:
+            move_x -= math.cos(self.last_hit_bearing) * 2.2
+            move_y -= math.sin(self.last_hit_bearing) * 2.2
 
         # Collect valuable loot only if it doesn't require crossing a dangerous fight.
         owned = {w.get('kind') for w in me.get('weapons', []) if w}
@@ -392,7 +192,7 @@ class SurvivalBot:
             if not obj.get('pos'):
                 continue
             d = dist(pos, xy(obj))
-            if d < 105 and 120 - 0.65 * d > goal_priority:
+            if d < 85 and 120 - 0.65 * d > goal_priority:
                 goal, goal_priority, pickup = obj, 120 - 0.65 * d, None
         # A supply drop offers full healing; only contest if enemies aren't nearby.
         if closest_d > 85:
@@ -403,46 +203,21 @@ class SurvivalBot:
                 if d < 130 and 135 - 0.65 * d + (40 if health_ratio < 0.75 else 0) > goal_priority:
                     goal, goal_priority, pickup = drop, 135 - 0.65 * d, None
 
-        # Navigation priority: emergency safe zone > escape pursuers > loot > quiet position.
-        if goal is not None and closest_d > 70 and zone_urgency < 2.5:
-            nav_goal = xy(goal)
-            nav_weight = 1.85
+        if goal is not None and closest_d > 75 and not recently_hit and zone_urgency < 2.5:
+            gx, gy = xy(goal)
+            gd = dist(pos, (gx, gy))
+            if gd > 1.5:
+                ux, uy = normalize(gx - pos[0], gy - pos[1])
+                weight = min(2.0, 0.5 + gd / 55.0)
+                move_x += ux * weight
+                move_y += uy * weight
         else:
-            nav_goal = strategic_goal
-            nav_weight = 1.25 if zone_urgency < 2.5 else 3.0
-        # Retreat from a hostile mech, but keep our escape point inside the zone.
-        if nearest is not None and closest_d < 110 and zone_urgency < 3.5:
-            enpos=xy(nearest)
-            ex,ey=normalize(pos[0]-enpos[0],pos[1]-enpos[1])
-            if ex or ey:
-                if (self.retreat_goal is None or tick>=self.retreat_refresh or
-                        self.retreat_enemy_id != nearest.get('id')):
-                    candidate=(pos[0]+ex*68,pos[1]+ey*68)
-                    safe_r=max(8, nrad-13)
-                    if dist(candidate,next_xy)>safe_r:
-                        ux,uy=normalize(candidate[0]-next_xy[0],candidate[1]-next_xy[1])
-                        candidate=(next_xy[0]+safe_r*ux,next_xy[1]+safe_r*uy)
-                    self.retreat_goal=candidate
-                    self.retreat_refresh=tick+25
-                    self.retreat_enemy_id=nearest.get('id')
-                if dist(self.retreat_goal, enpos) > closest_d+7:
-                    nav_goal=self.retreat_goal
-                    nav_weight=2.5
-        # Recently struck by an unseen enemy: use bearing to escape rather than idle.
-        elif nearest is None and tick-self.last_threat_tick < 25 and zone_urgency<2.5:
-            heading=self.last_threat_yaw+math.pi
-            nav_goal=(pos[0]+math.cos(heading)*48,
-                      pos[1]+math.sin(heading)*48)
-            nav_weight=1.8
-        if nav_goal is not None:
-            next_pt=(self.navigator.travel(pos,nav_goal,tick, self.stuck>12)
-                     if self.navigator else nav_goal)
-            ux,uy=normalize(next_pt[0]-pos[0],next_pt[1]-pos[1])
-            if dist(pos, nav_goal)>7.0:
-                move_x += ux*nav_weight
-                move_y += uy*nav_weight
+            # When safe, drift toward the center of the next circle, not the edge.
+            if not enemies and zone_urgency == 0 and dist(pos, next_xy) > 70:
+                ux, uy = normalize(float(next_xy[0]) - pos[0], float(next_xy[1]) - pos[1])
+                move_x += ux * 0.7
+                move_y += uy * 0.7
 
-        # Dynamic short-range separation from visible opponents.
         # Avoid oncoming visible projectiles when possible.
         for bullet in obs.get('projectiles', [])[:35]:
             p, v = bullet.get('pos'), bullet.get('vel')
@@ -525,6 +300,11 @@ class SurvivalBot:
                 if candidate_aim is None:
                     continue
                 worth = {'laser': 130, 'mortar': 110, 'lightning': 105, 'gun': 70}.get(kind, 20)
+                # A charging laser halves our movement speed: avoid beginning a
+                # long charge when weak and being chased at close range.
+                escape_risk = closest_d < 85 and (health_ratio < 0.75 or len(enemies) >= 2)
+                if kind == 'laser' and escape_risk and float(weapon.get('charge', 0)) < 0.35:
+                    worth -= 115
                 if kind == 'lightning' and td < 35:
                     worth += 60
                 if kind == 'mortar' and td < 80:
@@ -553,21 +333,27 @@ class SurvivalBot:
                     fire[chosen_slot] = angular_error < (0.2 if chosen_kind == 'mortar' else 0.15)
             else:
                 aim = list(aim_at(me, target, 'gun'))
-        elif nearest is None and tick-self.last_threat_tick<30:
-            aim = [self.last_threat_yaw, -0.05]
-        elif not nearest:
-            # Full 360-degree scan. v1 only swept back/forth through 180 degrees.
-            yaw = (t*0.92 + self.scan_offset + math.pi) % TAU - math.pi
-            aim = [yaw, -0.05]
+        elif not nearest and recently_hit:
+            # Facing the attacker also prevents the 1.5x rear-armor penalty.
+            aim = [self.last_hit_bearing, -0.04]
+        elif not nearest and t > 0:
+            close_sounds = [x for x in obs.get('sounds', [])
+                            if x.get('dist') == 'near' and x.get('bearing') is not None
+                            and x.get('kind') in ('gun','mortar','laser','lightning','boost')]
+            if close_sounds:
+                aim = [float(close_sounds[0]['bearing']), -0.04]
+            else:
+                # Steady sweep with a full 360-degree field of regard.
+                aim = [(t * 0.55 + self.scan_offset + math.pi) % TAU - math.pi, -0.04]
 
         action = {
             'tick': tick,
             'move': [round(mx, 5), round(my, 5)],
             'aim': [round(aim[0], 5), round(aim[1], 5)],
             'fire': fire,
-            'boost': bool(me.get('grounded', True) and energy > max_energy * 0.38 and
-                          (outside or next_edge > 70 or closest_d < 95 or
-                           (tick-self.last_threat_tick < 15 and health_ratio < 0.65)) and
+            'boost': bool(me.get('grounded', True) and energy > max_energy * 0.42 and
+                          (outside or next_edge > 25 or closest_d < 80 or
+                           (recently_hit and health_ratio < 0.83)) and
                           math.hypot(mx,my) > 0.5),
             'jump': bool(stuck_mode and me.get('grounded', True) and energy > 22),
             'reload': bool(any(w and w.get('kind') == 'gun' and
@@ -578,8 +364,9 @@ class SurvivalBot:
         # Without a ground jump, use jet only while escaping an obstacle.
         if stuck_mode and not me.get('grounded', True) and energy > 20:
             action['boost'] = True
-        if pickup and dist(pos, xy(pickup)) <= 3.7 and abs(float(me['pos'][2])-float(pickup['pos'][2])) <= 3.5:
-            if any(w is None for w in me.get('weapons',[])):
+        if (pickup and dist(pos, xy(pickup)) <= 3.7
+                and abs(float(me['pos'][2]) - float(pickup['pos'][2])) <= 3.7):
+            if any(w is None for w in me.get('weapons', [])):
                 action['take'] = int(pickup['id'])
             else:
                 # Keep the default gun and replace weaker special weapons.
