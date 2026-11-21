@@ -1,27 +1,34 @@
-# SteadySurvivor v3 — survival-first Mech Royale bot
+# SteadySurvivor v4 — dual-fire experiment
 
-Experimental third submission for Builders Buildathon / Mech Royale (`mechfight/1`). Python 3.13, standard library only. It is intentionally based on **v1 (practice score 2.27)** rather than v2 (score 2.00). The official conformance checker does **not** simulate matches and cannot validate gameplay strength.
+This candidate branches from the **v1 bot that scored 2.27**, not from v2 or v3.
 
-## Changes versus v1
+## One combat change
+When the bot selects a laser or lightning attack, it now ALSO fires the arm gun,
+provided its own ballistic aim agrees with the selected torso aim, the target is in
+gun range, the weapon is loaded and the torso is aligned. Laser charging/release is
+unchanged; mortar trajectories never trigger secondary gun fire.
 
-- Retains v1's lightweight, direct navigation and earlier zone boost logic; removes v2's expensive map pathfinder and automatic zone-edge patrol.
-- Chooses official upgrade IDs exactly, prioritizing movement speed, efficient boost, and immediate durability.
-- Evades the source of recent unseen enemy damage using the `damaged.bearing` event.
-- Scans 360 degrees while idle and reacts to nearby weapon sounds.
-- Avoids starting an immobilizing laser charge while fleeing multiple attackers at low health.
-- Checks vertical distance before taking a weapon from another floor.
+**Unchanged from v1:** movement, threat repulsion, looting decisions, upgrade
+ranking, target selection, gun aiming, laser charging, boosting, obstacle recovery.
 
-**No claim of a higher score until a new 48-match submission.** Practice seeds are fixed, making it useful to compare new versions with the earlier two results.
+This is a controlled experiment. Passing check.py shows protocol conformance,
+NOT improved game performance. Scored matches are needed to compare with v1.
 
-## Run locally (place the kit alongside this directory)
+## Test
+Requires the official `mechfight-kit` extracted next to this folder.
 
-```bash
-python3 smoke_test.py
+```sh
 python3 test_strategy.py
+python3 smoke_test.py
 bash test_official.sh
 bash test_docker.sh
 ```
 
-After passing all tests, replace the bot file in your existing public GitHub repository, commit/push, and submit again. Keep the old tagged versions; the organizers retain the best practice score and let you choose a different submission at cutoff. Do not push the kit's `arena/` data into your repo. Dockerfile at repository root is required.
+## Submission
+Push the changed `example_bot.py` and `test_strategy.py` to the existing GitHub
+repository, then re-submit. Keep a tag/commit for the v1 2.27 baseline and
+compare results. The event ranks your best score, but the scorer rebuilds your
+selected commit for finals. You need to retain the ability to restore your best.
 
+Mechfight/1 protocol, 50 ms per action, arm64 Mac Docker tested by participant.
 MIT license.

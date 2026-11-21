@@ -1,53 +1,39 @@
 #!/usr/bin/env python3
-"""Deterministic unit smoke tests. This is not a match simulation."""
-import copy
-import gzip
-import json
-import math
-import os
-from example_bot import SurvivalBot, upgrade_choice
+"""Deterministic action checks; this is NOT a match simulator."""
+from example_bot import SurvivalBot
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-KIT = os.environ.get('MECHFIGHT_KIT', os.path.abspath(os.path.join(HERE, '..', 'mechfight-kit')))
-with gzip.open(os.path.join(KIT, 'check', 'stream.jsonl.gz'), 'rt') as f:
-    hello = json.loads(next(f))
-    obs = json.loads(next(f))
-
-def bot():
-    b = SurvivalBot()
-    assert b.ready(hello)['name'] == 'SteadySurvivor-v3'
-    return b
-
-assert upgrade_choice({'choices': [{'id': 'nanites'}, {'id': 'servos'}, {'id': 'gun_damage'}]}) == 1
-assert upgrade_choice({'choices': [{'id': 'sensors'}, {'id': 'plating'}, {'id': 'armor'}]}) == 1
-
-safe = copy.deepcopy(obs)
-safe['t'] = 15.0
-safe['tick'] = 300
-safe['mechs'] = []
-safe['projectiles'] = []
-safe['crates'] = []
-safe['cubes'] = []
-safe['drops'] = []
-safe['pickups'] = []
-safe['events'] = []
-safe['sounds'] = []
-safe['zone'] = {'center': safe['self']['pos'][:2], 'radius': 350,
-                'next_center': safe['self']['pos'][:2], 'next_radius': 250}
-x = bot().act(safe)
-assert math.hypot(*x['move']) < 1e-4, x
-
-hit = copy.deepcopy(safe)
-hit['events'] = [{'type': 'damaged', 'weapon': 'gun', 'bearing': 0.0, 'amount': 45}]
-x = bot().act(hit)
-assert x['move'][0] < -0.9, x
-assert abs(x['aim'][0]) < 1e-4, x
-
-# Do not try to take an object on another floor.
-far_height = copy.deepcopy(safe)
-far_height['pickups'] = [{'id': 8001, 'kind': 'laser', 'pos': [safe['self']['pos'][0],
-                          safe['self']['pos'][1], safe['self']['pos'][2] + 20]}]
-x = bot().act(far_height)
-assert 'take' not in x, x
-
-print('Strategy unit tests PASS (not a game simulation)')
+def obs(special='laser', charge=0.2, ammo=10, aim=(0.0, -0.0997), d=25):
+    w0={"kind":"gun","ammo":ammo,"reload":0,"cooldown":0.0,
+        "stats":{"range":230,"speed":252}}
+    w1={"kind":special,"cooldown":0.0,"charge":charge,
+        "stats":{"range":280 if special=="laser" else 45 if special=="lightning" else 235,
+                 "charge":0.75,"speed":72,"gravity":22}}
+    return {
+      "type":"obs","tick":20,"t":1.0,"alive":16,
+      "self":{"id":0,"pos":[0,0,0],"vel":[0,0,0],"aim":list(aim),
+              "hp":1400,"max_hp":1400,"energy":100,"max_energy":100,
+              "grounded":True,"weapons":[w0,w1],"stats":{"muzzle_height":7}},
+      "mechs":[{"kind":"mech","id":1,"pos":[d,0,0],"vel":[0,0,0],
+                "hp":1000,"max_hp":1400}],
+      "pickups":[],"cubes":[],"crates":[],"drops":[],"projectiles":[],
+      "zone":{"center":[0,0],"radius":560,"next_center":[0,0],"next_radius":380}}
+def act(o):
+    bot=SurvivalBot()
+    bot.ready({"type":"hello","config":{},"seed":1})
+    return bot.act(o)
+def main():
+    a=act(obs(special="laser",charge=0.2))
+    assert a["fire"]==[True,True], f"both gun and charging laser must fire: {a}"
+    a=act(obs(special="laser",charge=0.75))
+    assert a["fire"]==[True,False], f"gun must continue while laser releases: {a}"
+    a=act(obs(special="lightning"))
+    assert a["fire"]==[True,True], f"gun and lightning must fire together: {a}"
+    a=act(obs(special="mortar"))
+    assert a["fire"]==[False,True], f"do not waste gun at ballistic arc: {a}"
+    a=act(obs(special="laser",ammo=0))
+    assert a["fire"][0] is False, f"empty gun must not fire: {a}"
+    a=act(obs(special="laser",aim=(2.5,0)))
+    assert a["fire"][0] is False, f"gun should wait to align: {a}"
+    print("Strategy tests PASS: dual-fire laser, lightning, safe mortar separation, ammo and aim guards")
+if __name__ == "__main__":
+    main()

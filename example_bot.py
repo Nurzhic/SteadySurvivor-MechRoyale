@@ -79,24 +79,18 @@ def mortar_aim(me, target, speed, gravity=22.0):
 
 def upgrade_choice(offer):
     # Defensive upgrades help placement; weapon improvements are useful second.
-    # Exact upgrade IDs from hello.config.upgrades, not substring guesses.
-    # Constant squad pursuit makes mobility and immediate durability valuable.
     scores = {
-        'servos': 115, 'jets': 110, 'plating': 106, 'armor': 103,
-        'capacitor': 99, 'reactor': 96, 'nanites': 88,
-        'gun_rate': 78, 'gun_damage': 76, 'gun_mag': 72,
-        'laser_charge': 71, 'laser_damage': 68,
-        'mortar_reload': 68, 'gun_velocity': 62,
-        'lightning_efficiency': 60, 'lightning_range': 56,
-        'gyros': 49, 'sensors': 44,
-        'mortar_velocity': 42, 'laser_pierce': 38,
-        'mortar_splash': 38, 'lightning_chain': 37,
+        'armor': 100, 'regen': 95, 'repair': 92, 'health': 90, 'hp': 85,
+        'speed': 80, 'move': 77, 'dash': 73, 'energy': 72, 'boost': 70,
+        'cooldown': 63, 'damage': 60, 'rate': 58, 'gun': 55,
+        'range': 40, 'sensor': 35, 'vision': 33,
     }
     choices = offer.get('choices', [])
     if not choices:
         return None
     def score(item):
-        return scores.get(str(item.get('id', '')).lower(), 15)
+        words = (str(item.get('id', '')) + ' ' + str(item.get('name', '')) + ' ' + str(item.get('desc', ''))).lower()
+        return max((rank for word, rank in scores.items() if word in words), default=15)
     return max(range(len(choices)), key=lambda i: score(choices[i]))
 
 
@@ -107,14 +101,10 @@ class SurvivalBot:
         self.escape_until = -1
         self.escape_side = 1
         self.config = {}
-        self.last_hit_tick = -10000
-        self.last_hit_bearing = 0.0
-        self.scan_offset = 0.0
 
     def ready(self, hello):
         self.config = hello.get('config', {}) or {}
-        self.scan_offset = (int(hello.get('seed', 1)) % 1021) / 1021.0 * TAU
-        return {'type': 'ready', 'name': 'SteadySurvivor-v3'}
+        return {'type': 'ready', 'name': 'SteadySurvivor-v4'}
 
     def act(self, obs):
         me = obs.get('self') or {}
@@ -147,30 +137,19 @@ class SurvivalBot:
         enemies.sort(key=lambda m: dist(pos, xy(m)))
         nearest = enemies[0] if enemies else None
         closest_d = dist(pos, xy(nearest)) if nearest else 1e9
-        # Events give a world-frame direction to attacks from hidden pursuers.
-        for event in obs.get('events', []):
-            if event.get('type') == 'damaged' and event.get('bearing') is not None:
-                self.last_hit_tick = tick
-                self.last_hit_bearing = float(event['bearing'])
-        recently_hit = tick - self.last_hit_tick <= 35
 
         # Strongly prefer space from opponents: practice bots cooperate and hunt us.
         for enemy in enemies:
             ex, ey = xy(enemy)
             d = dist(pos, (ex, ey))
-            if d < 170 and d > 1e-3:
-                strength = (170 - d) / 76.0
+            if d < 150 and d > 1e-3:
+                strength = (150 - d) / 75.0
                 if d < 55:
                     strength *= 1.9
                 if health_ratio < 0.6:
                     strength *= 1.4
                 move_x += (pos[0] - ex) / d * strength
                 move_y += (pos[1] - ey) / d * strength
-
-        # Don't stand still after being shot by an unseen opponent.
-        if recently_hit and nearest is None:
-            move_x -= math.cos(self.last_hit_bearing) * 2.2
-            move_y -= math.sin(self.last_hit_bearing) * 2.2
 
         # Collect valuable loot only if it doesn't require crossing a dangerous fight.
         owned = {w.get('kind') for w in me.get('weapons', []) if w}
@@ -192,7 +171,7 @@ class SurvivalBot:
             if not obj.get('pos'):
                 continue
             d = dist(pos, xy(obj))
-            if d < 85 and 120 - 0.65 * d > goal_priority:
+            if d < 105 and 120 - 0.65 * d > goal_priority:
                 goal, goal_priority, pickup = obj, 120 - 0.65 * d, None
         # A supply drop offers full healing; only contest if enemies aren't nearby.
         if closest_d > 85:
@@ -203,7 +182,7 @@ class SurvivalBot:
                 if d < 130 and 135 - 0.65 * d + (40 if health_ratio < 0.75 else 0) > goal_priority:
                     goal, goal_priority, pickup = drop, 135 - 0.65 * d, None
 
-        if goal is not None and closest_d > 75 and not recently_hit and zone_urgency < 2.5:
+        if goal is not None and closest_d > 50 and zone_urgency < 2.5:
             gx, gy = xy(goal)
             gd = dist(pos, (gx, gy))
             if gd > 1.5:
@@ -300,11 +279,6 @@ class SurvivalBot:
                 if candidate_aim is None:
                     continue
                 worth = {'laser': 130, 'mortar': 110, 'lightning': 105, 'gun': 70}.get(kind, 20)
-                # A charging laser halves our movement speed: avoid beginning a
-                # long charge when weak and being chased at close range.
-                escape_risk = closest_d < 85 and (health_ratio < 0.75 or len(enemies) >= 2)
-                if kind == 'laser' and escape_risk and float(weapon.get('charge', 0)) < 0.35:
-                    worth -= 115
                 if kind == 'lightning' and td < 35:
                     worth += 60
                 if kind == 'mortar' and td < 80:
@@ -331,29 +305,39 @@ class SurvivalBot:
                     fire[chosen_slot] = angular_error < 0.22
                 else:
                     fire[chosen_slot] = angular_error < (0.2 if chosen_kind == 'mortar' else 0.15)
+                # Fire the arm gun in parallel with laser/lightning when both
+                # weapons' ballistic solutions fit the same torso aim.
+                # Different muzzle trajectories: never couple gun with mortar.
+                if chosen_kind in ('laser', 'lightning'):
+                    for gun_slot, gun in enumerate(weapons[:2]):
+                        if not gun or gun.get('kind') != 'gun':
+                            continue
+                        gun_stats = gun.get('stats') or {}
+                        gun_range = float(gun_stats.get('range', 230.0))
+                        gun_aim = aim_at(me, target, 'gun')
+                        yaw_sep = abs(delta_angle(gun_aim[0] - aim[0]))
+                        pitch_sep = abs(gun_aim[1] - aim[1])
+                        yaw_error = abs(delta_angle(gun_aim[0] - float(current_aim[0])))
+                        pitch_error = abs(gun_aim[1] - float(current_aim[1]))
+                        if (td < 0.95 * gun_range
+                                and int(gun.get('ammo', 0)) > 0
+                                and float(gun.get('reload', 0)) <= 0
+                                and yaw_sep < 0.12 and pitch_sep < 0.11
+                                and yaw_error < 0.15 and pitch_error < 0.13):
+                            fire[gun_slot] = True
             else:
                 aim = list(aim_at(me, target, 'gun'))
-        elif not nearest and recently_hit:
-            # Facing the attacker also prevents the 1.5x rear-armor penalty.
-            aim = [self.last_hit_bearing, -0.04]
         elif not nearest and t > 0:
-            close_sounds = [x for x in obs.get('sounds', [])
-                            if x.get('dist') == 'near' and x.get('bearing') is not None
-                            and x.get('kind') in ('gun','mortar','laser','lightning','boost')]
-            if close_sounds:
-                aim = [float(close_sounds[0]['bearing']), -0.04]
-            else:
-                # Steady sweep with a full 360-degree field of regard.
-                aim = [(t * 0.55 + self.scan_offset + math.pi) % TAU - math.pi, -0.04]
+            # Scan for enemies instead of permanently looking in one direction.
+            aim = [math.sin(t / 13.0) * math.pi, -0.04]
 
         action = {
             'tick': tick,
             'move': [round(mx, 5), round(my, 5)],
             'aim': [round(aim[0], 5), round(aim[1], 5)],
             'fire': fire,
-            'boost': bool(me.get('grounded', True) and energy > max_energy * 0.42 and
-                          (outside or next_edge > 25 or closest_d < 80 or
-                           (recently_hit and health_ratio < 0.83)) and
+            'boost': bool(me.get('grounded', True) and energy > max_energy * 0.5 and
+                          (outside or next_edge > 25 or closest_d < 58) and
                           math.hypot(mx,my) > 0.5),
             'jump': bool(stuck_mode and me.get('grounded', True) and energy > 22),
             'reload': bool(any(w and w.get('kind') == 'gun' and
@@ -364,9 +348,8 @@ class SurvivalBot:
         # Without a ground jump, use jet only while escaping an obstacle.
         if stuck_mode and not me.get('grounded', True) and energy > 20:
             action['boost'] = True
-        if (pickup and dist(pos, xy(pickup)) <= 3.7
-                and abs(float(me['pos'][2]) - float(pickup['pos'][2])) <= 3.7):
-            if any(w is None for w in me.get('weapons', [])):
+        if pickup and dist(pos, xy(pickup)) <= 3.7:
+            if len(owned) < 2:
                 action['take'] = int(pickup['id'])
             else:
                 # Keep the default gun and replace weaker special weapons.
