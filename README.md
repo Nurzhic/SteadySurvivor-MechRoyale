@@ -1,44 +1,39 @@
-# SteadySurvivor — Mech Royale bot
+# SteadySurvivor v2 — Mech Royale
 
-A survival-first autonomous bot for the Builders Buildathon **Mech Royale** track. It implements the `mechfight/1` newline-delimited JSON protocol in **Python 3.13 standard library only** (no pip dependencies).
+An autonomous `mechfight/1` bot for the [Builders Buildathon Mech Royale track](https://www.joinbuilders.org/buildathon/tracks/builders).
 
-## Features
+## Status
 
-- Rotates and aims toward enemies, lead-targets gun shots.
-- Selects gun, laser, mortar, or lightning by range and circumstances.
-- Flees nearby threats and incoming projectiles.
-- Heads inside the current/next safe zone.
-- Collects power cubes, weapons, and uncontested supply drops.
-- Shoots crates and NPCs opportunistically.
-- Chooses upgrades, reloads, uses boosts, and attempts to escape obstacles.
-- Includes fast stdin/stdout transport to discard queued stale observations.
+- **v1 practice score:** 2.27 across 48 matches (reported by the team, 2026-11-21).
+- **v2 practice score:** not measured yet. The v2 changes are experimental; an increase is **not guaranteed**.
+- **v2 technical conformance:** PASS on 300/300 observations using the organizer's official `check/check.py` with a mounted map, tested in a local Python environment. Test your own Docker image before submission.
 
-**Status:** local smoke-tested against synthetic messages only. Run the official kit's `check/check.py` and the Docker sandbox check before submitting; a passing local smoke test is NOT a passing official check or a competitive rating.
+## Changes in v2
 
-## Setup
+- Reads the official campus `world.json` from `hello.map.dir` and builds an approximate ground-level grid of solid buildings.
+- Time-sliced A* route finding: searches in small batches over multiple decisions to avoid exceeding the 50 ms tick budget.
+- Keeps retreat destinations stable briefly to avoid oscillating paths.
+- Scans the complete 360° over time when no enemy is visible; reacts to damage direction even if a foe is out of view.
+- Uses actual organizer upgrade IDs to prioritize survivability (`nanites`, `armor`, `plating`, `servos`).
+- Adjusted boost use and pickup vertical range checking.
 
-1. Download the organizer's `mechfight-kit.tar.gz` from https://www.joinbuilders.org/buildathon/tracks/builders and extract it.
-2. Keep `Dockerfile`, `example_bot.py`, and `README.md` at the **root** of your public GitHub repo.
-3. For local conformance checks, copy the kit's `check/` and `arena/` directories alongside `example_bot.py`. Do NOT push these big directories to GitHub.
-4. From the repository root, run:
+### Limitations
 
-```sh
-python3 check/check.py -- python3 -u example_bot.py
-docker build --platform linux/amd64 -t steady-survivor .
-python3 check/check.py --map-dir /arena -- docker run --rm -i --platform linux/amd64 --network none --cpus 1 --memory 512m --read-only --tmpfs /tmp:rw,size=64m --user 65534:65534 -v "$PWD/arena:/arena:ro" steady-survivor
+The nav grid is an approximation: height, rooftops, bridges, terrain slopes, dynamic collisions and obscure routes are not fully simulated. The official kit does not include a full match simulator; `check.py` validates the protocol and timing, *not win rate*. Real placement improvements must be measured by new practice submissions.
+
+## Local testing
+
+Keep `mechfight-kit/` and this repository directory next to one another:
+
+```bash
+python3 smoke_test.py
+bash test_official.sh
+bash test_docker.sh
+python3 test_strategy.py
 ```
 
-For a newer version of the official kit, use its README commands if they differ.
+`test_docker.sh` uses `--platform linux/amd64`, `--cpus 1`, `--memory 512m`, `--network none`, a read-only filesystem, an unprivileged user, and a read-only map mount. On Apple Silicon, Docker Desktop may emulate AMD64, which is why this check matters.
 
-5. If both checks pass, push the repository **publicly** to GitHub (under the 20 MB limit) and submit its URL on the track page. Do not submit the archive; submit the repository URL.
+## Submitting
 
-## Notes
-
-- All strategy decisions use only observations (and no internet connection).
-- `stdout` is strictly for protocol JSON; errors go to `stderr`.
-- The image runs as uid 65534 (no root) and does not require filesystem writes.
-- Strategy is intentionally modest and needs actual game testing to assess placement score.
-
-## License
-
-MIT
+Push this repository to GitHub and submit the public repository URL on the Mech Royale page. Check the result before deciding whether to keep v2. The package is stdlib-only Python 3.13, single `example_bot.py` + a top-level `Dockerfile`. The project is MIT-licensed.
