@@ -1,0 +1,7 @@
+.git
+__pycache__
+*.pyc
+check
+arena
+mechfight-kit.tar.gz
+tests
